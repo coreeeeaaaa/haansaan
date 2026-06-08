@@ -30,6 +30,12 @@ labels are the trust surface for reentry, comparison, and downstream routing.
 They are deterministic for the same input and are not completion or truth
 claims.
 
+## Documentation
+
+- [Internal Procedure And Triggers](docs/INTERNAL_PROCEDURE_AND_TRIGGERS.md)
+- [Publication Boundary](docs/PUBLICATION_BOUNDARY.md)
+- [Security Policy](SECURITY.md)
+
 ## Commands
 
 ```bash
