@@ -11,6 +11,7 @@ from haansaan.core import (
     build_agent_call_response,
     build_judgment,
     build_possibility_certificate,
+    build_route_decision,
     dumps_json,
     list_entry_labels,
     list_profiles,
@@ -46,6 +47,29 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--maintenance-note", default="")
     judge.add_argument("--innovation-claim", action="append", default=[])
     judge.add_argument("--json", action="store_true")
+
+    decide = subparsers.add_parser("decide", help="Classify a target and emit a verifier route decision without executing probes")
+    decide.add_argument("--target-text", required=True)
+    decide.add_argument("--purpose", default="")
+    decide.add_argument("--target", action="append", default=[])
+    decide.add_argument("--constraint", action="append", default=[])
+    decide.add_argument("--input-text", default="")
+    decide.add_argument("--output-text", default="")
+    decide.add_argument("--context-text", default="")
+    decide.add_argument("--claim", action="append", default=[])
+    decide.add_argument("--evidence-ref", action="append", default=[])
+    decide.add_argument("--memory-ref", action="append", default=[])
+    decide.add_argument("--flow-step", action="append", default=[])
+    decide.add_argument("--artifact-path", action="append", default=[])
+    decide.add_argument("--next-action", action="append", default=[])
+    decide.add_argument("--resource-profile-json", default="", help="Optional JSON object with bounded resource evidence")
+    decide.add_argument("--architecture-note", default="")
+    decide.add_argument("--risk-item", action="append", default=[])
+    decide.add_argument("--attack-scenario", action="append", default=[])
+    decide.add_argument("--review-scope", default="")
+    decide.add_argument("--maintenance-note", default="")
+    decide.add_argument("--innovation-claim", action="append", default=[])
+    decide.add_argument("--json", action="store_true")
 
     call = subparsers.add_parser("call", help="External program JSON call contract for agents")
     call.add_argument("--request", default="", help="JSON request file. If omitted, stdin is read.")
@@ -83,6 +107,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _emit(payload, json_output=args.json)
         return 1 if payload["fail_count"] else 0
+    if args.command == "decide":
+        artifacts = _judge_artifacts(args)
+        payload = build_route_decision(
+            target_text=args.target_text,
+            purpose=args.purpose,
+            target_kinds=tuple(args.target),
+            constraints=tuple(args.constraint),
+            artifacts=artifacts,
+        )
+        _emit(payload, json_output=args.json)
+        return 0
     if args.command == "call":
         payload, exit_code = _cmd_call(args)
         if args.pretty:

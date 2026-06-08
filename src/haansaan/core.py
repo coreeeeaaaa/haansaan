@@ -17,6 +17,7 @@ HAANSAAN_SCHEMA_ID = "HAANSAAN_PURPOSE_TRIGGER_JUDGMENT_V1"
 HAANSAAN_AGENT_CALL_REQUEST_SCHEMA_ID = "HAANSAAN_AGENT_CALL_REQUEST_V1"
 HAANSAAN_AGENT_CALL_RESPONSE_SCHEMA_ID = "HAANSAAN_AGENT_CALL_RESPONSE_V1"
 HAANSAAN_POSSIBILITY_CERTIFICATE_SCHEMA_ID = "HAANSAAN_COMPLETION_POSSIBILITY_CERTIFICATE_V1"
+HAANSAAN_ROUTE_DECISION_SCHEMA_ID = "HAANSAAN_TARGET_ROUTE_DECISION_V1"
 Mode = Literal["plan", "check", "run"]
 AdapterKind = Literal["python_module", "command", "local_system", "builtin"]
 RowStatus = Literal["PASS", "REPORT", "FAIL"]
@@ -285,6 +286,57 @@ def list_entry_labels() -> dict[str, Any]:
     }
 
 
+def build_route_decision(
+    *,
+    target_text: str,
+    purpose: str = "",
+    target_kinds: Iterable[str] = (),
+    constraints: Iterable[str] = (),
+    artifacts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    artifact_payload = dict(artifacts or {})
+    target_values = tuple(target_kinds)
+    constraint_values = tuple(constraints)
+    combined_text = _route_combined_text(
+        target_text=target_text,
+        purpose=purpose,
+        target_kinds=target_values,
+        constraints=constraint_values,
+        artifacts=artifact_payload,
+    )
+    tokens = _normalize_text(combined_text).union(_normalize_many(target_values)).union(_normalize_many(constraint_values))
+    classification = _classify_target(tokens=tokens, artifacts=artifact_payload, target_text=target_text, purpose=purpose)
+    evidence_map = _route_required_evidence_map(classification=classification, artifacts=artifact_payload)
+    recommended_systems = _recommended_systems_for_route(classification=classification, evidence_map=evidence_map)
+    decision = _route_decision_verdict(
+        classification=classification,
+        evidence_map=evidence_map,
+        recommended_systems=recommended_systems,
+    )
+    return {
+        "schema_id": HAANSAAN_ROUTE_DECISION_SCHEMA_ID,
+        "operation": "decide",
+        "target_text": target_text,
+        "purpose": purpose,
+        "target_kinds": list(target_values),
+        "constraints": list(constraint_values),
+        "classification": classification,
+        "required_evidence_map": evidence_map,
+        "recommended_systems": recommended_systems,
+        "route_decision": decision,
+        "next_actions": _route_next_actions(decision=decision, evidence_map=evidence_map, recommended_systems=recommended_systems),
+        "execution_boundary": {
+            "automatic_execution": False,
+            "decision_precedes_execution": True,
+            "caller_must_select_or_confirm_next_route": True,
+            "missing_evidence_must_remain_report": True,
+        },
+        "completion_claim": False,
+        "release_ready_claim": False,
+        "truth_claim": False,
+    }
+
+
 def build_possibility_certificate() -> dict[str, Any]:
     witness = build_judgment(
         purpose="purpose direction objective trace",
@@ -506,6 +558,40 @@ def build_judgment(
 def build_agent_call_response(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(request, dict):
         raise ValueError("HAANSAAN_AGENT_CALL_REQUEST_MUST_BE_OBJECT")
+    operation = str(request.get("operation") or "judge").strip().lower().replace("-", "_")
+    if operation in {"decide", "route", "route_decision"}:
+        target_text = str(request.get("target_text") or request.get("target") or request.get("purpose") or "").strip()
+        if not target_text:
+            raise ValueError("HAANSAAN_AGENT_CALL_TARGET_TEXT_REQUIRED")
+        route_decision = build_route_decision(
+            target_text=target_text,
+            purpose=str(request.get("purpose") or ""),
+            target_kinds=_request_string_list(request, "target_kinds"),
+            constraints=_request_string_list(request, "constraints"),
+            artifacts=_request_dict(request, "artifacts"),
+        )
+        return {
+            "schema_id": HAANSAAN_AGENT_CALL_RESPONSE_SCHEMA_ID,
+            "ok": True,
+            "operation": "decide",
+            "request_schema_id": str(request.get("schema_id") or ""),
+            "request_id": str(request.get("request_id") or ""),
+            "caller": str(request.get("caller") or ""),
+            "contract": {
+                "callable_by_external_program": True,
+                "stdin_json_supported": True,
+                "file_json_supported": True,
+                "stdout_json_only": True,
+                "no_hidden_global_state": True,
+                "no_network_required": True,
+                "decision_only": True,
+                "automatic_execution": False,
+            },
+            "route_decision": route_decision,
+            "completion_claim": False,
+            "release_ready_claim": False,
+            "truth_claim": False,
+        }
     purpose = str(request.get("purpose") or "").strip()
     if not purpose:
         raise ValueError("HAANSAAN_AGENT_CALL_PURPOSE_REQUIRED")
@@ -575,6 +661,259 @@ def _request_dict(request: dict[str, Any], key: str) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     raise ValueError(f"HAANSAAN_AGENT_CALL_{key.upper()}_MUST_BE_OBJECT")
+
+
+def _route_combined_text(
+    *,
+    target_text: str,
+    purpose: str,
+    target_kinds: Iterable[str],
+    constraints: Iterable[str],
+    artifacts: dict[str, Any],
+) -> str:
+    parts = [
+        target_text,
+        purpose,
+        " ".join(str(item) for item in target_kinds),
+        " ".join(str(item) for item in constraints),
+        _artifact_joined_text(artifacts),
+        _artifact_text(artifacts, "architecture_notes"),
+        _artifact_text(artifacts, "maintenance_notes"),
+        " ".join(str(item) for item in _artifact_list(artifacts, "claims")),
+        " ".join(str(item) for item in _artifact_list(artifacts, "risk_items")),
+        " ".join(str(item) for item in _artifact_list(artifacts, "attack_scenarios")),
+        " ".join(str(item) for item in _artifact_list(artifacts, "innovation_claims")),
+    ]
+    return "\n".join(part for part in parts if str(part).strip())
+
+
+def _classify_target(
+    *,
+    tokens: set[str],
+    artifacts: dict[str, Any],
+    target_text: str,
+    purpose: str,
+) -> dict[str, Any]:
+    artifact_keys = _present_artifact_keys(artifacts)
+    class_rules = {
+        "claim_review": {"claim", "evidence", "release", "public", "publish", "scope", "maturity", "verdict", "주장", "증거", "공개", "배포", "판정"},
+        "meta_synthesis": {"meta_analysis", "synthesis", "bayesian_update", "conflict", "compare", "종합", "메타", "여수", "충돌"},
+        "formal_or_math": {"math", "logic", "constraint", "formula", "proof", "theorem", "formal_proof", "satisfiability", "invariant", "수학", "논리", "증명"},
+        "code_artifact": {"code", "program", "package", "repository", "lint", "type_check", "test", "코드", "레포"},
+        "security_risk": {"security", "risk", "secret", "vulnerability", "attack", "supply_chain", "privacy", "보안", "위험", "공격", "취약점"},
+        "architecture_system": {"architecture", "system", "module", "interface", "flow", "구조", "시스템"},
+        "memory_context_flow": {"memory", "context", "trace", "flow", "replay", "experience", "기억", "맥락", "흐름", "추적"},
+        "language_surface": {"natural_language", "grammar", "parser", "surface_syntax", "document", "text", "언어", "문서", "문법"},
+        "quality_management": {"quality", "management", "completion_bar", "owner_next_action", "task", "plan", "품질", "관리", "완성", "태스크"},
+    }
+    target_classes = [class_id for class_id, markers in class_rules.items() if tokens.intersection(markers)]
+    if "claims" in artifact_keys or "evidence_refs" in artifact_keys:
+        target_classes.append("claim_review")
+    if "artifact_paths" in artifact_keys:
+        target_classes.extend(["code_artifact", "io_flow"])
+    if "risk_items" in artifact_keys or "attack_scenarios" in artifact_keys:
+        target_classes.extend(["security_risk", "attack_surface"])
+    if "architecture_notes" in artifact_keys or "flow_steps" in artifact_keys:
+        target_classes.append("architecture_system")
+    if "memory_refs" in artifact_keys:
+        target_classes.append("memory_context_flow")
+    target_classes = _unique_strings(target_classes)
+    if not target_classes:
+        target_classes = ["quality_management"]
+    return {
+        "target_classes": target_classes,
+        "route_labels": [f"target:{class_id}" for class_id in target_classes],
+        "artifact_keys": artifact_keys,
+        "target_text_present": bool(target_text.strip()),
+        "purpose_present": bool(purpose.strip()),
+        "target_is_under_specified": len(_normalize_text(target_text)) < 3 and not artifact_keys,
+    }
+
+
+def _route_required_evidence_map(*, classification: dict[str, Any], artifacts: dict[str, Any]) -> list[dict[str, Any]]:
+    artifact_keys = set(classification["artifact_keys"])
+    requirements = {
+        "claim_review": ("claims", "evidence_refs", "scope_or_not_scope"),
+        "meta_synthesis": ("claims", "evidence_refs", "conflict_or_comparison_items"),
+        "formal_or_math": ("input_text_or_artifact_paths", "claim_or_formula", "expected_proof_system"),
+        "code_artifact": ("artifact_paths", "review_scope_or_target_files", "test_or_lint_expectation"),
+        "security_risk": ("artifact_paths_or_risk_items", "trust_boundary_or_attack_scenario", "dependency_manifest_if_supply_chain"),
+        "architecture_system": ("architecture_notes_or_flow_steps", "module_or_interface_boundary", "operational_constraint"),
+        "memory_context_flow": ("memory_refs_or_flow_steps", "source_boundary", "retention_or_replay_rule"),
+        "language_surface": ("input_text_or_output_text", "language_or_grammar_target", "quality_criteria"),
+        "quality_management": ("purpose", "evidence_refs_or_next_actions", "completion_bar"),
+        "io_flow": ("artifact_paths_or_input_output_text", "file_presence_or_schema_rule", "trace_expectation"),
+        "attack_surface": ("attack_scenarios_or_risk_items", "entrypoint_or_boundary", "expected_impact_axis"),
+    }
+    satisfied_aliases = {
+        "claims": {"claims"},
+        "evidence_refs": {"evidence_refs"},
+        "scope_or_not_scope": {"review_scope", "context_text"},
+        "conflict_or_comparison_items": {"risk_items", "context_text", "claims"},
+        "input_text_or_artifact_paths": {"input_text", "artifact_paths"},
+        "claim_or_formula": {"claims", "input_text"},
+        "expected_proof_system": {"next_actions", "evidence_refs"},
+        "artifact_paths": {"artifact_paths"},
+        "review_scope_or_target_files": {"review_scope", "artifact_paths"},
+        "test_or_lint_expectation": {"evidence_refs", "next_actions"},
+        "artifact_paths_or_risk_items": {"artifact_paths", "risk_items"},
+        "trust_boundary_or_attack_scenario": {"attack_scenarios", "context_text", "risk_items"},
+        "dependency_manifest_if_supply_chain": {"artifact_paths", "evidence_refs"},
+        "architecture_notes_or_flow_steps": {"architecture_notes", "flow_steps"},
+        "module_or_interface_boundary": {"architecture_notes", "artifact_paths"},
+        "operational_constraint": {"resource_profile", "flow_steps", "context_text"},
+        "memory_refs_or_flow_steps": {"memory_refs", "flow_steps"},
+        "source_boundary": {"memory_refs", "context_text"},
+        "retention_or_replay_rule": {"flow_steps", "next_actions"},
+        "input_text_or_output_text": {"input_text", "output_text"},
+        "language_or_grammar_target": {"context_text", "claims"},
+        "quality_criteria": {"evidence_refs", "next_actions"},
+        "purpose": {"input_text", "output_text", "claims"},
+        "evidence_refs_or_next_actions": {"evidence_refs", "next_actions"},
+        "completion_bar": {"review_scope", "context_text", "next_actions"},
+        "artifact_paths_or_input_output_text": {"artifact_paths", "input_text", "output_text"},
+        "file_presence_or_schema_rule": {"artifact_paths", "evidence_refs"},
+        "trace_expectation": {"flow_steps", "next_actions"},
+        "attack_scenarios_or_risk_items": {"attack_scenarios", "risk_items"},
+        "entrypoint_or_boundary": {"artifact_paths", "flow_steps", "context_text"},
+        "expected_impact_axis": {"risk_items", "review_scope", "context_text"},
+    }
+    rows = []
+    for class_id in classification["target_classes"]:
+        required_items = requirements.get(class_id, ())
+        missing = []
+        satisfied = []
+        for item in required_items:
+            if artifact_keys.intersection(satisfied_aliases.get(item, {item})):
+                satisfied.append(item)
+            else:
+                missing.append(item)
+        rows.append(
+            {
+                "target_class": class_id,
+                "required": list(required_items),
+                "satisfied": satisfied,
+                "missing": missing,
+                "status": "SATISFIED" if not missing else "MISSING_EVIDENCE",
+            }
+        )
+    return rows
+
+
+def _recommended_systems_for_route(
+    *,
+    classification: dict[str, Any],
+    evidence_map: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    missing_by_class = {row["target_class"]: row["missing"] for row in evidence_map}
+    route_table = {
+        "claim_review": [("oreo", "public claim/evidence/scope promotion review", ("semantic_logic", "quality", "management"))],
+        "meta_synthesis": [("yeosoooo", "cross-evidence synthesis and update", ("quality", "management"))],
+        "formal_or_math": [
+            ("z3", "SMT satisfiability and counterexample checks", ("math",)),
+            ("cvc5", "SMT satisfiability and model checks", ("math",)),
+            ("lean4", "formal proof/type-check path when proof artifacts exist", ("formal",)),
+            ("dafny", "program contract and invariant verification", ("formal",)),
+        ],
+        "code_artifact": [
+            ("ruff", "Python lint/import hygiene for target files", ("code_review",)),
+            ("pyright", "Python static type checking when available", ("code_review",)),
+            ("haansaan", "bounded code review route decision and report rows", ("code_review", "quality")),
+        ],
+        "security_risk": [
+            ("semgrep", "static security rule scan when configured", ("code_security",)),
+            ("bandit", "Python security API scan", ("code_security",)),
+            ("pip_audit", "Python dependency advisory scan", ("code_security",)),
+            ("haansaan", "risk-surface classification and next-action packet", ("code_security", "attack_verification")),
+        ],
+        "architecture_system": [("haansaan", "architecture, complexity, maintainability, and stability route", ("architecture", "complexity", "maintainability", "stability"))],
+        "memory_context_flow": [("haansaan", "memory, context, flow, replay, and contamination route", ("memory", "context", "contamination"))],
+        "language_surface": [("haansaan", "natural-language and surface syntax route", ("natural_language", "purpose_drift"))],
+        "quality_management": [("haansaan", "quality, management, evidence, and next-action route", ("quality", "management"))],
+        "io_flow": [("haansaan", "artifact I/O and trace route", ("io_flow", "context"))],
+        "attack_surface": [("haansaan", "adversarial attack-surface route", ("attack_verification", "code_security"))],
+    }
+    recommendations = []
+    seen = set()
+    for class_id in classification["target_classes"]:
+        for system_id, role, profiles in route_table.get(class_id, ()):
+            key = (system_id, class_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            missing = missing_by_class.get(class_id, [])
+            recommendations.append(
+                {
+                    "system_id": system_id,
+                    "target_class": class_id,
+                    "role": role,
+                    "profiles": list(profiles),
+                    "recommended_mode": "plan" if missing else "check",
+                    "run_now": False,
+                    "why_selected": f"{class_id} route selected from target classification",
+                    "blocked_by_missing_evidence": missing,
+                }
+            )
+    return recommendations
+
+
+def _route_decision_verdict(
+    *,
+    classification: dict[str, Any],
+    evidence_map: list[dict[str, Any]],
+    recommended_systems: list[dict[str, Any]],
+) -> dict[str, Any]:
+    missing_count = sum(len(row["missing"]) for row in evidence_map)
+    primary = recommended_systems[0]["system_id"] if recommended_systems else "haansaan"
+    if classification["target_is_under_specified"]:
+        decision = "INTAKE_REQUIRED"
+        recommended_posture = "do_not_run_yet"
+    elif missing_count:
+        decision = "ROUTE_DESIGN_REQUIRED"
+        recommended_posture = "review_first"
+    else:
+        decision = "ROUTE_READY_FOR_CONFIRMATION"
+        recommended_posture = "confirm_before_run"
+    return {
+        "decision": decision,
+        "primary_system": primary,
+        "recommended_posture": recommended_posture,
+        "missing_evidence_count": missing_count,
+        "run_policy": "DO_NOT_AUTO_RUN",
+        "judgment": "DECISION_ONLY_NEXT_ACTION_PACKET",
+    }
+
+
+def _route_next_actions(
+    *,
+    decision: dict[str, Any],
+    evidence_map: list[dict[str, Any]],
+    recommended_systems: list[dict[str, Any]],
+) -> list[str]:
+    actions = []
+    if decision["decision"] == "INTAKE_REQUIRED":
+        actions.append("Provide target_text plus purpose, target kinds, or bounded artifacts before selecting a verifier path.")
+    for row in evidence_map:
+        if row["missing"]:
+            actions.append(f"For {row['target_class']}, supply: {', '.join(row['missing'])}.")
+    if recommended_systems:
+        systems = ", ".join(_unique_strings(row["system_id"] for row in recommended_systems))
+        actions.append(f"Review the recommended systems before execution: {systems}.")
+    actions.append("After confirming the route, call `haansaan judge` with the selected profiles and bounded artifacts.")
+    return _unique_strings(actions)
+
+
+def _present_artifact_keys(artifacts: dict[str, Any]) -> list[str]:
+    present = []
+    for key, value in artifacts.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, (list, tuple, dict, set)) and not value:
+            continue
+        present.append(str(key))
+    return sorted(present)
 
 
 def _expand_profile_inputs(

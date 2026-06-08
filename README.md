@@ -2,10 +2,13 @@
 
 `haansaan` is an independent verifier judgment system.
 
-It does not pretend to prove, score, or complete a claim by itself. It takes a
-purpose, target kind, and criteria, selects the relevant existing verifier
+Its first job is route decision: classify a target, identify missing evidence,
+and tell the caller which verifier, review, proof, synthesis, security, or
+quality path should be considered before execution. It does not pretend to
+prove, score, or complete a claim by itself. It takes a purpose, target kind,
+criteria, and bounded artifacts, selects the relevant existing verifier
 adapters, checks whether they are available, and optionally runs only selected
-safe probes.
+safe probes after the caller chooses that route.
 
 It is built for subprocess use by agents. The caller passes a purpose, one or
 more purpose profiles, and bounded artifacts. `haansaan` routes to the relevant
@@ -43,6 +46,7 @@ haansaan labels --json
 haansaan profiles --json
 haansaan possibility --json
 haansaan possibility --json --out /tmp/haansaan-possibility-certificate.json
+haansaan decide --target-text "Public release claim with missing evidence" --purpose "claim evidence release" --claim "release ready" --json
 haansaan judge --profile code_review --artifact-path /path/to/file.py --mode run --json
 haansaan judge --profile code_security --output-text "bounded file handling" --mode run --json
 haansaan judge --profile architecture --flow-step parse --flow-step route --resource-profile-json '{"network_required":false}' --mode run --json
@@ -51,9 +55,25 @@ python3 -m haansaan.cli judge --purpose "logic constraint" --target formula --cr
 haansaan judge --profile purpose_drift --output-text "purpose direction objective preserved" --mode run --json
 python3 -m haansaan.cli tools --json
 printf '%s\n' '{"schema_id":"HAANSAAN_AGENT_CALL_REQUEST_V1","request_id":"r1","caller":"agent","purpose":"logic constraint","target_kinds":["formula"],"criteria_tags":["satisfiability"],"mode":"check"}' | haansaan call
+haansaan call --request examples/route-decision.request.json
 haansaan call --request examples/logic-run.request.json
 haansaan call --request examples/agent-workflow-review.request.json
 ```
+
+`haansaan decide` is the top-level entry when the caller does not yet know what
+to run. It emits `HAANSAAN_TARGET_ROUTE_DECISION_V1` with:
+
+- target classes such as `claim_review`, `formal_or_math`, `code_artifact`,
+  `security_risk`, `architecture_system`, `memory_context_flow`,
+  `language_surface`, and `quality_management`.
+- required evidence rows, including what is satisfied and what is missing.
+- recommended systems such as `oreo`, `yeosoooo`, `z3`, `cvc5`, `lean4`,
+  `dafny`, `ruff`, `pyright`, `semgrep`, `bandit`, `pip_audit`, and
+  `haansaan`.
+- `run_policy: DO_NOT_AUTO_RUN` and `automatic_execution: false`.
+
+Use `decide` before `judge` when the task is "what should inspect this target?"
+rather than "run these selected profiles now."
 
 Modes:
 
@@ -132,6 +152,10 @@ current release completion.
 Agents and other systems should call `haansaan call` as a subprocess and pass a
 single JSON object by stdin or with `--request <file>`.
 
+Set `"operation": "decide"` when route selection is needed before verifier
+execution. The response then wraps `HAANSAAN_TARGET_ROUTE_DECISION_V1` under
+`route_decision` and does not run probes.
+
 Purpose profiles:
 
 - `math`: symbolic, numeric, matrix, optimization, and solver checks.
@@ -169,6 +193,7 @@ Request:
 ```json
 {
   "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "operation": "judge",
   "request_id": "stable-caller-id",
   "caller": "external-agent-name",
   "purpose": "logic constraint",
@@ -193,6 +218,25 @@ Request:
     "review_scope": "",
     "maintenance_notes": "",
     "innovation_claims": []
+  }
+}
+```
+
+Route-decision request:
+
+```json
+{
+  "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "operation": "decide",
+  "request_id": "route-public-claim-1",
+  "caller": "external-agent-name",
+  "target_text": "Should this public completion claim be promoted?",
+  "purpose": "claim evidence public release",
+  "target_kinds": ["report"],
+  "constraints": ["do not execute before route confirmation"],
+  "artifacts": {
+    "claims": ["release ready"],
+    "context_text": "public boundary"
   }
 }
 ```

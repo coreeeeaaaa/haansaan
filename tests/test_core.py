@@ -11,6 +11,7 @@ from haansaan.core import (
     build_agent_call_response,
     build_judgment,
     build_possibility_certificate,
+    build_route_decision,
     list_entry_labels,
     list_profiles,
     list_tools,
@@ -338,6 +339,149 @@ def test_cli_call_reads_stdin_json_and_emits_machine_response() -> None:
     assert payload["judgment"]["report_count"] == 1
     assert payload["judgment"]["tool_rows"][0]["reason_code"] in {"MISSING_COMMAND", "COMMAND_FOUND"}
     assert payload["judgment"]["tool_rows"][0]["decision_report"]["next_actions"]
+
+
+def test_route_decision_recommends_oreo_for_claim_publication_without_running_tools() -> None:
+    packet = build_route_decision(
+        target_text="Publish a claim that haansaan is a release-ready proof system",
+        purpose="public claim evidence maturity release review",
+        artifacts={
+            "claims": ["haansaan is release-ready"],
+            "context_text": "public publication boundary",
+        },
+    )
+
+    assert packet["schema_id"] == "HAANSAAN_TARGET_ROUTE_DECISION_V1"
+    assert "claim_review" in packet["classification"]["target_classes"]
+    assert packet["route_decision"]["primary_system"] == "oreo"
+    assert packet["route_decision"]["run_policy"] == "DO_NOT_AUTO_RUN"
+    assert packet["execution_boundary"]["automatic_execution"] is False
+    oreo = next(row for row in packet["recommended_systems"] if row["system_id"] == "oreo")
+    assert oreo["run_now"] is False
+    assert "evidence_refs" in oreo["blocked_by_missing_evidence"]
+
+
+def test_route_decision_recommends_formal_tools_for_math_or_proof_target() -> None:
+    packet = build_route_decision(
+        target_text="Prove a logic constraint and find counterexamples for a formula",
+        purpose="formal proof math satisfiability",
+        artifacts={
+            "input_text": "(assert (= x 6))",
+            "claims": ["the constraint is satisfiable"],
+            "evidence_refs": ["spec:formula"],
+        },
+    )
+
+    system_ids = {row["system_id"] for row in packet["recommended_systems"]}
+    assert "formal_or_math" in packet["classification"]["target_classes"]
+    assert {"z3", "cvc5", "lean4", "dafny"}.issubset(system_ids)
+    assert packet["route_decision"]["run_policy"] == "DO_NOT_AUTO_RUN"
+
+
+def test_route_decision_recommends_yeosoooo_for_meta_synthesis() -> None:
+    packet = build_route_decision(
+        target_text="Synthesize conflicting evidence and update the judgment",
+        purpose="메타분석 종합 여수",
+        artifacts={
+            "claims": ["tool A passed", "tool B failed"],
+            "evidence_refs": ["run:a", "run:b"],
+            "risk_items": ["conflict between evidence rows"],
+        },
+    )
+
+    assert "meta_synthesis" in packet["classification"]["target_classes"]
+    assert any(row["system_id"] == "yeosoooo" for row in packet["recommended_systems"])
+    assert packet["execution_boundary"]["decision_precedes_execution"] is True
+
+
+def test_route_decision_recommends_code_and_security_paths_for_repository_target() -> None:
+    packet = build_route_decision(
+        target_text="Review this Python package for code quality and security risk",
+        purpose="code security risk repository",
+        target_kinds=("package",),
+        artifacts={
+            "artifact_paths": ["src/haansaan/core.py"],
+            "risk_items": ["subprocess boundary"],
+            "attack_scenarios": ["untrusted artifact path"],
+        },
+    )
+
+    system_ids = {row["system_id"] for row in packet["recommended_systems"]}
+    assert {"code_artifact", "security_risk"}.issubset(set(packet["classification"]["target_classes"]))
+    assert {"ruff", "pyright", "semgrep", "bandit", "pip_audit", "haansaan"}.issubset(system_ids)
+    assert packet["route_decision"]["run_policy"] == "DO_NOT_AUTO_RUN"
+
+
+def test_agent_call_can_request_decision_only_route_packet() -> None:
+    response = build_agent_call_response(
+        {
+            "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+            "operation": "decide",
+            "request_id": "route-case",
+            "caller": "agent",
+            "target_text": "Should this public claim be promoted?",
+            "purpose": "claim evidence public release",
+            "artifacts": {"claims": ["ready"], "context_text": "public boundary"},
+        }
+    )
+
+    assert response["schema_id"] == HAANSAAN_AGENT_CALL_RESPONSE_SCHEMA_ID
+    assert response["operation"] == "decide"
+    assert response["contract"]["decision_only"] is True
+    assert response["route_decision"]["schema_id"] == "HAANSAAN_TARGET_ROUTE_DECISION_V1"
+    assert response["route_decision"]["execution_boundary"]["automatic_execution"] is False
+
+
+def test_cli_decide_emits_route_decision_without_execution() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "haansaan.cli",
+            "decide",
+            "--target-text",
+            "Public release claim with missing evidence",
+            "--purpose",
+            "claim evidence release",
+            "--claim",
+            "release ready",
+            "--json",
+        ],
+        cwd=project_root,
+        env={**os.environ, "PYTHONPATH": str(project_root / "src")},
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["schema_id"] == "HAANSAAN_TARGET_ROUTE_DECISION_V1"
+    assert payload["route_decision"]["run_policy"] == "DO_NOT_AUTO_RUN"
+    assert payload["execution_boundary"]["automatic_execution"] is False
+
+
+def test_cli_call_route_decision_example_file_works() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    request_path = project_root / "examples" / "route-decision.request.json"
+    result = subprocess.run(
+        [sys.executable, "-m", "haansaan.cli", "call", "--request", str(request_path)],
+        cwd=project_root,
+        env={**os.environ, "PYTHONPATH": str(project_root / "src")},
+        text=True,
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "decide"
+    assert payload["route_decision"]["schema_id"] == "HAANSAAN_TARGET_ROUTE_DECISION_V1"
+    assert payload["route_decision"]["route_decision"]["primary_system"] == "oreo"
+    assert payload["route_decision"]["execution_boundary"]["automatic_execution"] is False
 
 
 def test_cli_profiles_lists_machine_readable_profile_registry() -> None:

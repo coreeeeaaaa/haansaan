@@ -6,6 +6,10 @@ purpose-relevant verifier adapters, runs bounded checks, and emits a judgment.
 `haansaan` is a verifier judgment router. It is not a truth oracle, autonomous
 agent, sandbox, proof engine, or security scanner by itself.
 
+The highest-level entry is route decision. A caller can ask `haansaan` to
+classify the target and recommend which review, proof, security, synthesis, or
+quality path should be considered before any verifier execution.
+
 ## System Surfaces
 
 `haansaan` has four public surfaces:
@@ -17,6 +21,8 @@ agent, sandbox, proof engine, or security scanner by itself.
 
 The implementation entrypoints are:
 
+- `haansaan decide`: target classification and route decision without probe
+  execution.
 - `haansaan judge`: direct CLI judgment route.
 - `haansaan call`: external program JSON call contract.
 - `haansaan tools`: registered adapter inventory.
@@ -48,6 +54,68 @@ Optional:
 
 The response uses `HAANSAAN_AGENT_CALL_RESPONSE_V1` and wraps a
 `HAANSAAN_PURPOSE_TRIGGER_JUDGMENT_V1` judgment.
+
+For route selection, callers set `"operation": "decide"` and provide
+`target_text`, optional `purpose`, optional `target_kinds`, optional
+`constraints`, and bounded `artifacts`. The response still uses
+`HAANSAAN_AGENT_CALL_RESPONSE_V1`, but wraps
+`HAANSAAN_TARGET_ROUTE_DECISION_V1` under `route_decision`.
+
+## Route Decision Flow
+
+Use this flow when the caller needs to know what should inspect the target.
+
+1. Parse target intake
+   - `target_text`, purpose, target labels, constraints, and bounded artifacts
+     are gathered.
+   - Missing or thin intake remains `INTAKE_REQUIRED`.
+
+2. Classify target
+   - The target is assigned one or more classes:
+     - `claim_review`
+     - `meta_synthesis`
+     - `formal_or_math`
+     - `code_artifact`
+     - `security_risk`
+     - `architecture_system`
+     - `memory_context_flow`
+     - `language_surface`
+     - `quality_management`
+     - `io_flow`
+     - `attack_surface`
+
+3. Build required evidence map
+   - Each target class receives required evidence rows.
+   - Each row records `required`, `satisfied`, `missing`, and `status`.
+   - Missing evidence stays `MISSING_EVIDENCE`; it is not converted to `PASS`.
+
+4. Recommend systems
+   - `claim_review` can recommend `oreo`.
+   - `meta_synthesis` can recommend `yeosoooo`.
+   - `formal_or_math` can recommend `z3`, `cvc5`, `lean4`, and `dafny`.
+   - `code_artifact` can recommend `ruff`, `pyright`, and `haansaan`.
+   - `security_risk` can recommend `semgrep`, `bandit`, `pip_audit`, and
+     `haansaan`.
+   - architecture, memory, language, quality, I/O, and attack-surface routes
+     can recommend bounded `haansaan` profiles.
+
+5. Emit decision-only packet
+   - The route packet sets `run_policy` to `DO_NOT_AUTO_RUN`.
+   - Each recommendation sets `run_now` to `false`.
+   - The execution boundary sets `automatic_execution` to `false`.
+   - The caller must confirm or select the next route before calling
+     `haansaan judge`.
+
+Route decision verdicts:
+
+- `INTAKE_REQUIRED`: the target is too thin to route safely.
+- `ROUTE_DESIGN_REQUIRED`: route classes were found, but required evidence is
+  missing.
+- `ROUTE_READY_FOR_CONFIRMATION`: the route has enough evidence for the caller
+  to confirm a selected run path.
+
+Route decision is not a proof, release claim, security approval, or maturity
+claim. It is the execution-before-judgment boundary.
 
 ## Trigger Flow
 

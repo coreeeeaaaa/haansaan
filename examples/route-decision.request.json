@@ -1,0 +1,20 @@
+{
+  "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "operation": "decide",
+  "request_id": "route-public-claim-1",
+  "caller": "external-agent",
+  "target_text": "Should this public completion claim be promoted?",
+  "purpose": "claim evidence public release",
+  "target_kinds": [
+    "report"
+  ],
+  "constraints": [
+    "do not execute before route confirmation"
+  ],
+  "artifacts": {
+    "claims": [
+      "release ready"
+    ],
+    "context_text": "public boundary"
+  }
+}
