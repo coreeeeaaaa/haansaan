@@ -1,0 +1,9 @@
+{
+  "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "request_id": "meta-check-example",
+  "caller": "external-agent",
+  "purpose": "메타분석 신뢰도",
+  "target_kinds": ["report"],
+  "criteria_tags": ["bayesian_update"],
+  "mode": "check"
+}

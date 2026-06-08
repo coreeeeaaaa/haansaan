@@ -1,0 +1,9 @@
+{
+  "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "request_id": "logic-run-example",
+  "caller": "external-agent",
+  "purpose": "logic constraint",
+  "target_kinds": ["formula"],
+  "criteria_tags": ["satisfiability"],
+  "mode": "run"
+}

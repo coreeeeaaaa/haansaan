@@ -1,0 +1,41 @@
+{
+  "schema_id": "HAANSAAN_AGENT_CALL_REQUEST_V1",
+  "request_id": "agent-workflow-review-example",
+  "caller": "external-agent",
+  "purpose": "AI work product input output flow memory contamination quality management review",
+  "profiles": [
+    "io_flow",
+    "purpose_drift",
+    "memory",
+    "contamination",
+    "quality",
+    "management"
+  ],
+  "mode": "run",
+  "artifacts": {
+    "input_text": "Build a bounded verifier program.",
+    "output_text": "Built a bounded verifier program with purpose trace and evidence refs.",
+    "context_text": "No private data should be published.",
+    "artifact_paths": [
+      "src/haansaan/core.py"
+    ],
+    "flow_steps": [
+      "parse request",
+      "select purpose profiles",
+      "run selected adapters"
+    ],
+    "memory_refs": [
+      "memory:session"
+    ],
+    "evidence_refs": [
+      "test:pytest"
+    ],
+    "next_actions": [
+      "install optional external adapters when a profile requires deeper checks"
+    ],
+    "resource_profile": {
+      "mode": "bounded-local-run",
+      "network_required": false
+    }
+  }
+}
